@@ -1,0 +1,17 @@
+tensorflow==2.15.0
+tensorflow-datasets==4.9.7
+tensorflow-estimator==2.15.0
+tensorflow-hub==0.16.1
+tensorflow-io-gcs-filesystem==0.37.1
+tensorflow-metadata==1.16.1
+tensorflow-model-optimization==0.8.0
+tensorflow-text==2.15.0
+tf-keras==2.15.0
+pyarrow==11.0.0
+opencv-python-headless==4.7.0.68
+tf-models-official==2.15.0
+tf-slim==1.1.0
+fastapi
+uvicorn
+streamlit
+numpy
