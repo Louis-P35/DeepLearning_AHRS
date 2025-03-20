@@ -9,8 +9,8 @@ import os
 
 """
 Get the keys of the file
-@param file: str
-@return list
+@param file: str - path to the file
+@return list of keys
 """
 def getKeys(file: str) -> list[str]:
     _keys: list[str] = []
@@ -26,7 +26,7 @@ def getKeys(file: str) -> list[str]:
 
 """
 Process the file
-@param file: str
+@param file: str - path to the file
 @return None
 """
 def processFile(file: str) -> None:
@@ -42,17 +42,21 @@ def processFile(file: str) -> None:
 
 """
 Check if the file is an HDF5 file
-@param path: str
-@return bool
+@param path: str - path to the file
+@return bool - True if the file is an HDF5 file, False otherwise
 """
 def is_hdf5_file(path: str) -> bool:
     return h5py.is_hdf5(path)
 
 
-if __name__ == "__main__":
 
+"""
+Create the SQLite database
+@param folder_path: str - path to the folder containing the HDF5 files
+@return None
+"""
+def createDatabase(folder_path: str) -> None:
     # HDF5 files to process
-    folder_path = "../../submodules/broad/data_hdf5"
     files = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, f))]
     print(files)
 
@@ -80,6 +84,8 @@ if __name__ == "__main__":
     # Process each file
     for file_path in files:
 
+        file_id = os.path.basename(file_path)
+
         # Skip non-HDF5 files
         if (not is_hdf5_file(file_path)):
                 print(f"Skipping {file_id}...")
@@ -96,7 +102,6 @@ if __name__ == "__main__":
             move: np.ndarray = f['movement'][:]
 
             N = acc.shape[0]  # number of samples
-            file_id = os.path.basename(file_path)
             print(f"Processing {file_id} with {N} samples...")
 
             # Insert data into SQLite database
@@ -119,3 +124,13 @@ if __name__ == "__main__":
     conn.close()
 
     print("All data stored in SQLite database.")
+
+
+
+if __name__ == "__main__":
+
+    # Path to the folder containing the HDF5 files
+    folder_path = "../../submodules/broad/data_hdf5"
+
+    # Create the SQLite database
+    createDatabase(folder_path)
