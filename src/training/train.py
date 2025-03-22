@@ -24,6 +24,20 @@ def loadFromDatabase(database_path: str) -> pd.DataFrame:
 if __name__ == "__main__":
 
     df: pd.DataFrame = loadFromDatabase("../dataExtraction/imu_data.db")
-    
+
     # Preview the data
+    print("\nData preview:")
     print(df.head())
+
+    # Print the shape of the DataFrame
+    print("\nData shape:")
+    print(df.shape)
+
+    # Print the columns of the DataFrame
+    print("\nData columns:")
+    print(df.columns)
+
+    # Print the data types of the DataFrame
+    print("\nData types:")
+    print(df.dtypes)
+
