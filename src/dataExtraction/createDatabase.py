@@ -24,12 +24,14 @@ def getKeys(file: str) -> list[str]:
 
 
 
-"""
-Process the file
-@param file: str - path to the file
-@return None
-"""
+
 def processFile(file: str) -> None:
+    """
+    Process the file
+    @param file: str - path to the file
+    @return None
+    """
+
     keys: list[str] = getKeys(file)
     print(keys)
 
@@ -40,22 +42,23 @@ def processFile(file: str) -> None:
             print(data[:5])  # print first 5 rows
 
 
-"""
-Check if the file is an HDF5 file
-@param path: str - path to the file
-@return bool - True if the file is an HDF5 file, False otherwise
-"""
 def is_hdf5_file(path: str) -> bool:
+    """
+    Check if the file is an HDF5 file
+    @param path: str - path to the file
+    @return bool - True if the file is an HDF5 file, False otherwise
+    """
     return h5py.is_hdf5(path)
 
 
 
-"""
-Create the SQLite database
-@param folder_path: str - path to the folder containing the HDF5 files
-@return None
-"""
 def createDatabase(folder_path: str) -> None:
+    """
+    Create the SQLite database
+    @param folder_path: str - path to the folder containing the HDF5 files
+    @return None
+    """
+
     # HDF5 files to process
     files = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, f))]
     print(files)
