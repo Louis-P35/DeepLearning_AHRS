@@ -114,6 +114,9 @@ def normalize_quaternions(df: pd.DataFrame, quat_cols: list[str]) -> pd.DataFram
     
     @return pd.DataFrame: DataFrame with normalized quaternions
     """
+
+    df = df.copy() # Ensures we're modifying a fresh copy, not a view
+
     q: np.ndarray = df[quat_cols].values
     norm: np.ndarray = np.linalg.norm(q, axis=1, keepdims=True)
     df[quat_cols] = q / norm
@@ -122,11 +125,17 @@ def normalize_quaternions(df: pd.DataFrame, quat_cols: list[str]) -> pd.DataFram
 
 def preprocessData(df: pd.DataFrame) -> pd.DataFrame:
 
+    df = df.copy() # Ensures we're modifying a fresh copy, not a view
+
     # Drop rows with NaN values in feature or target columns
     df = df.dropna()
 
     # Normalize the data
-    # Centers signal around zero → LSTM learns more easily
+    # Centers signal around zero so LSTM learns more easily
+    # Maps data to a standard normal distribution (mean=0, std=1), 
+    # which can be better for capturing signed data (e.g., acceleration can be negative).
+    # Values won’t be strictly between 0 and 1 (could be negative or >1), but LSTMs handle this fine
+
     scaler = StandardScaler()
     columns_to_scale = [
         "acc_x", "acc_y", "acc_z",
@@ -149,6 +158,11 @@ def preprocessData(df: pd.DataFrame) -> pd.DataFrame:
 
 
 if __name__ == "__main__":
+
+    print("TensorFlow version:", tf.__version__)
+    print("TensorFlow build with cuda:", tf.test.is_built_with_cuda())
+    print("Num GPUs available:", len(tf.config.list_physical_devices('GPU')))
+    print("Physical devices:", tf.config.list_physical_devices('GPU'))
 
     # Load the data from the database
     print("\nLoading data from the database...")
@@ -203,11 +217,13 @@ if __name__ == "__main__":
 
     # Create sub-DataFrames
     # For example, if file_ids = [1, 2, 3, 4, 5], train_ids might be [1, 3, 5] (70% of the IDs, randomly selected).
-    train_df: pd.DataFrame = df[df["file_id"].isin(train_ids)]
-    val_df: pd.DataFrame = df[df["file_id"].isin(val_ids)]
-    test_df: pd.DataFrame = df[df["file_id"].isin(test_ids)]
+    train_df: pd.DataFrame = df[df["file_id"].isin(train_ids)].copy()
+    val_df: pd.DataFrame = df[df["file_id"].isin(val_ids)].copy()
+    test_df: pd.DataFrame = df[df["file_id"].isin(test_ids)].copy()
 
     print(f"Train: {len(train_df)} rows, Val: {len(val_df)} rows, Test: {len(test_df)} rows")
+
+    BATCH_SIZE: int = 256
 
     # Create generators
     train_gen: IMUSequenceGenerator = IMUSequenceGenerator(
@@ -215,7 +231,7 @@ if __name__ == "__main__":
         feature_cols=feature_cols,
         target_cols=target_cols,
         seq_len=100,
-        batch_size=64,
+        batch_size=BATCH_SIZE,
         shuffle=True  # Shuffle windows within files for training
     )
 
@@ -224,7 +240,7 @@ if __name__ == "__main__":
         feature_cols=feature_cols,
         target_cols=target_cols,
         seq_len=100,
-        batch_size=64,
+        batch_size=BATCH_SIZE,
         shuffle=False  # Preserve order for validation
     )
 
@@ -233,9 +249,11 @@ if __name__ == "__main__":
         feature_cols=feature_cols,
         target_cols=target_cols,
         seq_len=100,
-        batch_size=64,
+        batch_size=BATCH_SIZE,
         shuffle=False  # Preserve order for testing
     )
+
+    print(train_df.head(50))
 
     # Test the generator
     #X_batch, y_batch = gen[0]
@@ -260,6 +278,7 @@ if __name__ == "__main__":
 
     # Display model summary
     model.summary()
+    #exit()
 
     # Train the Model
     history = model.fit(
