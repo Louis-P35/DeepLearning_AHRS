@@ -274,7 +274,6 @@ if __name__ == "__main__":
     # Preprocess the data
     print("\nPreprocessing data...")
     df = preprocessData(df)
-    exit()
 
     # Print the min and max values of each column of the DataFrame
     print("\nData min and max values:")
