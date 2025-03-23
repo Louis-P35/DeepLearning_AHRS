@@ -2,6 +2,7 @@
 import sqlite3
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
 from tensorflow.keras.utils import Sequence
 from sklearn.model_selection import train_test_split
@@ -11,10 +12,18 @@ from tensorflow.keras.optimizers import Adam
 import tensorflow as tf
 from tensorflow.keras import mixed_precision  # For faster GPU training
 from tensorflow.keras.callbacks import ModelCheckpoint
+from tensorflow.keras.regularizers import l2
+from tensorflow.keras.callbacks import EarlyStopping
 
 # Import from STL
 import os
 
+
+# TODOs:
+# Test the model
+# Print more metrics
+# Retrain the model with less not moving data
+# Increase dropout
 
 
 class IMUSequenceGenerator(Sequence):
@@ -170,6 +179,30 @@ def preprocessData(df: pd.DataFrame) -> pd.DataFrame:
     # Drop rows with NaN values in feature or target columns
     df = df.dropna()
 
+    # Count rows with movement = 0 and movement = 1
+    movement_0_count = len(df[df["movement"] == 0])
+    movement_1_count = len(df[df["movement"] == 1])
+    total_rows = len(df)
+    print(f"\nMovement counts before downsampling:")
+    print(f"Rows with movement = 0: {movement_0_count} ({movement_0_count/total_rows:.2%})")
+    print(f"Rows with movement = 1: {movement_1_count} ({movement_1_count/total_rows:.2%})")
+
+    # Downsample movement = 0 to 50% of its original count
+    max_movement_0 = int(movement_0_count * 0.5)  # 50% of original movement = 0 rows
+    df_movement_0: pd.DataFrame = df[df["movement"] == 0].sample(n=max_movement_0, random_state=42)  # Randomly select 50% (not moving so random is okay here)
+    df_movement_1: pd.DataFrame = df[df["movement"] == 1]  # Keep all movement = 1 rows
+
+    # Combine the downsampled movement = 0 with all movement = 1
+    df = pd.concat([df_movement_0, df_movement_1], ignore_index=True)
+
+    # Verify counts after downsampling
+    movement_0_count_new = len(df[df["movement"] == 0])
+    movement_1_count_new = len(df[df["movement"] == 1])
+    total_rows_new = len(df)
+    print(f"\nMovement counts after downsampling:")
+    print(f"Rows with movement = 0: {movement_0_count_new} ({movement_0_count_new/total_rows_new:.2%})")
+    print(f"Rows with movement = 1: {movement_1_count_new} ({movement_1_count_new/total_rows_new:.2%})")
+
     # Normalize the data
     # Centers signal around zero so LSTM learns more easily
     # Maps data to a standard normal distribution (mean=0, std=1), 
@@ -241,6 +274,7 @@ if __name__ == "__main__":
     # Preprocess the data
     print("\nPreprocessing data...")
     df = preprocessData(df)
+    exit()
 
     # Print the min and max values of each column of the DataFrame
     print("\nData min and max values:")
@@ -284,16 +318,6 @@ if __name__ == "__main__":
     train_df = pd.concat(train_dfs, ignore_index=True)
     val_df = pd.concat(val_dfs, ignore_index=True)
     test_df = pd.concat(test_dfs, ignore_index=True)
-
-    # Split into train (70%), val (15%), test (15%)
-    #train_ids, temp_ids = train_test_split(file_ids, test_size=0.3, random_state=42)
-    #val_ids, test_ids = train_test_split(temp_ids, test_size=0.5, random_state=42)
-
-    # Create sub-DataFrames
-    # For example, if file_ids = [1, 2, 3, 4, 5], train_ids might be [1, 3, 5] (70% of the IDs, randomly selected).
-    #train_df: pd.DataFrame = df[df["file_id"].isin(train_ids)].copy()
-    #val_df: pd.DataFrame = df[df["file_id"].isin(val_ids)].copy()
-    #test_df: pd.DataFrame = df[df["file_id"].isin(test_ids)].copy()
 
     print(f"Train: {len(train_df)} rows, Val: {len(val_df)} rows, Test: {len(test_df)} rows")
 
@@ -344,10 +368,10 @@ if __name__ == "__main__":
     # Build the Model
     model: Sequential = Sequential([
         LSTM(128, input_shape=(100, 9), return_sequences=True),  # 100 timesteps, 9 features
-        Dropout(0.2),  # Regularization to prevent overfitting
+        Dropout(0.3),  # Regularization to prevent overfitting
         LSTM(64),  # Second LSTM layer
-        Dropout(0.2),
-        Dense(32, activation='relu'),  # Intermediate dense layer
+        Dropout(0.3),
+        Dense(32, activation='relu', kernel_regularizer=l2(0.01)),  # Intermediate dense layer
         Dense(4, activation='linear')  # Output layer for 4 quaternion components
     ])
 
@@ -362,13 +386,17 @@ if __name__ == "__main__":
     model.summary()
     #exit()
 
-    # Train the Model
+    
+    # Save the model if validation loss improves at each epoch
     checkpoint = ModelCheckpoint("checkpoint.h5", save_best_only=True, monitor='val_loss', mode='min')
+    # Stop training if validation loss does not improve after 2 epoch. Then restore the best weights
+    early_stopping = EarlyStopping(monitor='val_loss', patience=2, restore_best_weights=True)
+    # Train the Model
     history = model.fit(
         train_dataset,
         validation_data=val_dataset,
         epochs=10,  # Number of epochs
-        callbacks=[checkpoint],  # Save the best model
+        callbacks=[checkpoint, early_stopping],  # Save the best model
         verbose=1  # Show training progress
     )
 
@@ -380,3 +408,13 @@ if __name__ == "__main__":
 
     # Save the model
     model.save("imu_lstm_model.h5")
+
+    # Plot the training history
+    plt.plot(history.history['loss'], label='Train Loss')
+    plt.plot(history.history['val_loss'], label='Val Loss')
+    plt.legend()
+    plt.show()
+    plt.plot(history.history['mae'], label='Train MAE')
+    plt.plot(history.history['val_mae'], label='Val MAE')
+    plt.legend()
+    plt.show()
