@@ -9,7 +9,7 @@ from sklearn.preprocessing import StandardScaler
 from tensorflow.keras.utils import Sequence
 from sklearn.model_selection import train_test_split
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout, Attention, Lambda, Input
+from tensorflow.keras.layers import LSTM, Dense, Dropout, Attention, Lambda, Input, Softmax, Multiply, Permute, RepeatVector
 from tensorflow.keras.optimizers import Adam
 import tensorflow as tf
 from tensorflow.keras import mixed_precision  # For faster GPU training
@@ -22,23 +22,20 @@ from tensorflow.keras.callbacks import Callback
 import os
 
 
-# TODOs:
-# Normalisation des Sorties : Force les quaternions prédits à être unitaires (norme 1)
-    # model.add(Lambda(lambda x: x / tf.sqrt(tf.reduce_sum(tf.square(x), axis=-1, keepdims=True))))
+def plot_quaternion_comparison(y_test: np.ndarray, y_pred: np.ndarray, component_index: int, component_name: str, filename: str) -> None:
+    """
+    Plot comparison between ground truth and predicted quaternion components.
+    """
 
-# Loss Fonction Adaptée
-    # Problème : MSE traite toutes les composantes également, mais les erreurs angulaires comptent plus.
-    # Solution : Ajoute une perte basée sur l’erreur angulaire
-
-# Reduce model size
-
-# predict euler angles
-
-# Early stopping callback at 5 epochs without improvement
-
-# Plus gros model & plus grand learning rate
-
-# Pendant le training si ça saute d'un fichier à un autre ? ça va mettre du temps à reconverger et foiré le training.. ?
+    plt.figure(figsize=(10, 6))
+    plt.plot(y_test[:, component_index], label=f"Ground Truth ({component_name})")
+    plt.plot(y_pred[:, component_index], label=f"Prediction ({component_name})")
+    plt.xlabel("Sample Index")
+    plt.ylabel(f"Value of {component_name}")
+    plt.title(f"Comparison of Predictions and Ground Truth for {component_name}")
+    plt.legend()
+    plt.savefig(filename)
+    plt.close()
 
 
 def quaternion_to_rotation_matrix(q: np.ndarray) -> np.ndarray:
@@ -57,6 +54,7 @@ def quaternion_to_rotation_matrix(q: np.ndarray) -> np.ndarray:
         [2*x*y + 2*w*z, 1 - 2*x*x - 2*z*z, 2*y*z - 2*w*x],
         [2*x*z - 2*w*y, 2*y*z + 2*w*x, 1 - 2*x*x - 2*y*y]
     ])
+
 
 def plot_cube(ax: Axes3D, position: np.ndarray, rotation_matrix: np.ndarray, color: str = 'b', label: str = None) -> None:
     """
@@ -117,7 +115,8 @@ def plot_cube(ax: Axes3D, position: np.ndarray, rotation_matrix: np.ndarray, col
     
     # Add label if provided
     if label:
-        ax.text(position[0], position[1], position[2], label, color=color)
+        ax.text(position[0], position[1], position[2] + 1.5, label, color=color)
+
 
 def update_frame(frame: int, ax: Axes3D, y_test: np.ndarray, y_pred: np.ndarray) -> None:
     """
@@ -140,14 +139,15 @@ def update_frame(frame: int, ax: Axes3D, y_test: np.ndarray, y_pred: np.ndarray)
     # Ground truth quaternion (left cube)
     q_true = y_test[frame]
     rot_true = quaternion_to_rotation_matrix(q_true)
-    plot_cube(ax, position=[-1, 0, 0], rotation_matrix=rot_true, color='b', label='Truth')
+    plot_cube(ax, position=[-1, 0, 0], rotation_matrix=rot_true, color='b', label='Truth (Optical tracking)')
     
     # Predicted quaternion (right cube)
     q_pred = y_pred[frame]
     rot_pred = quaternion_to_rotation_matrix(q_pred)
-    plot_cube(ax, position=[1, 0, 0], rotation_matrix=rot_pred, color='r', label='Predicted')
+    plot_cube(ax, position=[1, 0, 0], rotation_matrix=rot_pred, color='r', label='Predicted (LSTM network)')
     
     ax.set_title(f'Frame {frame}')
+
 
 def generate_videos(y_test: np.ndarray, y_pred: np.ndarray, num_videos: int = 20, fps: int = 20, interval: int = 500) -> None:
     """
@@ -202,26 +202,6 @@ class ResetStatesCallback(Callback):
         for layer in self.lstm_layers:
             layer.reset_states()
             print(f"Layer {layer.name} Reset")
-
-
-def create_sequences(df, feature_cols, target_cols, seq_len=2):
-    """
-    Create sequences from a DataFrame, preloaded in memory.
-
-    @param df (pd.DataFrame): The DataFrame containing the data
-    @param feature_cols (list[str]): The list of feature columns
-    @param target_cols (list[str]): The list of target columns
-    @param seq_len (int): The sequence length
-    @return np.ndarray, np.ndarray: The input and target
-    """
-    X, y = [], []
-    for _, group in df.groupby("file_id"):
-        X_group = group[feature_cols].values.astype(np.float32)
-        y_group = group[target_cols].values.astype(np.float32)
-        for i in range(len(X_group) - seq_len + 1):
-            X.append(X_group[i:i + seq_len])
-            y.append(y_group[i + seq_len - 1])
-    return np.array(X), np.array(y)
 
 
 def create_sequences_stateful(df, feature_cols, target_cols, seq_len, batch_size):
@@ -327,6 +307,11 @@ def preprocessData(df: pd.DataFrame) -> pd.DataFrame:
     # which can be better for capturing signed data (e.g., acceleration can be negative).
     # Values won’t be strictly between 0 and 1 (could be negative or >1), but LSTMs handle this fine
 
+    # Low pass filter on the accelerometer data
+    df["acc_x"] = df["acc_x"].rolling(window=5, min_periods=1).mean()
+    df["acc_y"] = df["acc_y"].rolling(window=5, min_periods=1).mean()
+    df["acc_z"] = df["acc_z"].rolling(window=5, min_periods=1).mean()
+
     scaler = StandardScaler()
     columns_to_scale = [
         "acc_x", "acc_y", "acc_z",
@@ -347,132 +332,39 @@ def preprocessData(df: pd.DataFrame) -> pd.DataFrame:
     # Drop the movement column
     df = df.drop(columns=["movement"])
 
-    # Debug, train faster with only data of the first file
-    #df = df[df["file_id"] == "01_undisturbed_slow_rotation_A.hdf5"]
+    undisturbed_slow_files: list[str] = [
+        "01_undisturbed_slow_rotation_A.hdf5",
+        "02_undisturbed_slow_rotation_B.hdf5",
+        # "03_undisturbed_slow_rotation_C.hdf5",
+        # "04_undisturbed_slow_rotation_with_breaks_A.hdf5",
+        # "05_undisturbed_slow_rotation_with_breaks_B.hdf5",
+        # "10_undisturbed_slow_translation_A.hdf5",
+        # "11_undisturbed_slow_translation_B.hdf5",
+        # "12_undisturbed_slow_translation_C.hdf5",
+        # "13_undisturbed_slow_translation_with_breaks_A.hdf5",
+        # "14_undisturbed_slow_translation_with_breaks_B.hdf5",
+        # "19_undisturbed_slow_combined_240s.hdf5",
+        # "20_undisturbed_slow_combined_360s.hdf5",
+    ]
+
+    # Drop the files that are not in the list
+    #df = df[df["file_id"].isin(undisturbed_slow_files)]
 
     return df
-
-
-def generate_synthetic_data(n_samples=10000, n_files=5):
-    """
-    Generate a synthetic dataset with sine waves mimicking IMU and quaternion data.
-    - 9 input features (like acc_x, acc_y, etc.) as sine waves with different frequencies.
-    - 4 target columns (quat_w, quat_x, quat_y, quat_z) as phase-shifted sine waves.
-    - Split into multiple "files" to mimic file_id grouping.
-    """
-    t = np.linspace(0, n_samples / 100, n_samples)  # Time vector
-    data = []
-    
-    samples_per_file = n_samples // n_files
-    for file_idx in range(n_files):
-        start_idx = file_idx * samples_per_file
-        end_idx = (file_idx + 1) * samples_per_file if file_idx < n_files - 1 else n_samples
-        
-        # Generate 9 input features (sine waves with different frequencies)
-        features = {
-            "acc_x": np.sin(1 * t[start_idx:end_idx]),
-            "acc_y": np.sin(2 * t[start_idx:end_idx]),
-            "acc_z": np.sin(3 * t[start_idx:end_idx]),
-            "gyr_x": np.sin(4 * t[start_idx:end_idx]),
-            "gyr_y": np.sin(5 * t[start_idx:end_idx]),
-            "gyr_z": np.sin(6 * t[start_idx:end_idx]),
-            "mag_x": np.sin(7 * t[start_idx:end_idx]),
-            "mag_y": np.sin(8 * t[start_idx:end_idx]),
-            "mag_z": np.sin(9 * t[start_idx:end_idx]),
-        }
-
-        print (start_idx, " ", end_idx)
-        
-        # Generate 4 target "quaternions" (simplified sine waves, not true quaternions)
-        targets = {
-            "quat_w": np.sin(1 * t[start_idx:end_idx] + 0.5),  # Phase shift
-            "quat_x": np.cos(2 * t[start_idx:end_idx]),
-            "quat_y": np.sin(3 * t[start_idx:end_idx] + 1.0),
-            "quat_z": np.sin(4 * t[start_idx:end_idx]),
-        }
-        
-        # Add file_id and dummy columns to match your structure
-        df_file = pd.DataFrame({
-            "file_id": [f"file_{file_idx:02d}"] * (end_idx - start_idx),
-            "sample_idx": np.arange(end_idx - start_idx),
-            "movement": ["synthetic"] * (end_idx - start_idx),
-            **features,
-            **targets
-        })
-        data.append(df_file)
-    
-    return pd.concat(data, ignore_index=True)
-
-
-# Add this after preprocessing the data
-def plot_synthetic_data(df, output_dir="synthetic_plots"):
-    """
-    Plot the synthetic data to visualize input features and targets.
-    
-    Args:
-        df (pd.DataFrame): The synthetic DataFrame after preprocessing.
-        output_dir (str): Directory to save the plots.
-    """
-    import os
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
-    # Select one file for plotting (e.g., the first file_id)
-    file_id = df["file_id"].iloc[0]
-    df_file = df[df["file_id"] == file_id].reset_index(drop=True)
-    time = np.arange(len(df_file))  # Time index
-
-    # Define feature and target columns
-    feature_cols = ["acc_x", "acc_y", "acc_z", "gyr_x", "gyr_y", "gyr_z", "mag_x", "mag_y", "mag_z"]
-    target_cols = ["quat_w", "quat_x", "quat_y", "quat_z"]
-
-    # 1. Time Series Plot for All Columns in One Graph
-    plt.figure(figsize=(12, 6))
-    for col in feature_cols:
-        plt.plot(time, df_file[col], label=col, alpha=0.5)
-    for col in target_cols:
-        plt.plot(time, df_file[col], label=col, linewidth=2)
-    plt.title(f"Synthetic Data - File: {file_id}")
-    plt.xlabel("Time Step")
-    plt.ylabel("Value")
-    plt.legend(loc="upper right", bbox_to_anchor=(1.15, 1))
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, f"time_series_{file_id}.png"))
-    plt.close()
-
-    # 2. Subplot Grid for Each Column
-    n_cols = 13  # 9 features + 4 targets
-    n_rows = 5   # Adjust as needed
-    plt.figure(figsize=(15, 10))
-    for i, col in enumerate(feature_cols + target_cols, 1):
-        plt.subplot(n_rows, (n_cols + n_rows - 1) // n_rows, i)
-        plt.plot(time, df_file[col], label=col)
-        plt.title(col)
-        plt.xlabel("Time Step")
-        plt.ylabel("Value")
-        plt.legend()
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, f"subplot_grid_{file_id}.png"))
-    plt.close()
-
-    print(f"Plots saved in '{output_dir}' directory.")
-
 
 
 if __name__ == "__main__":
 
     # Hyperparameters
-    BATCH_SIZE: int = 256
+    BATCH_SIZE: int = 128
     REGULARIZER: float = 0.01
     DROPOUT: float = 0.2
-    LEARNING_RATE: float = 0.0005
-    EPOCH: int = 100
-    SEQUENCE_LENGTH: int = 20 # Window of x samples
+    LEARNING_RATE: float = 0.0001
+    EPOCH: int = 1000
+    PATIENCE: int = 15
+    SEQUENCE_LENGTH: int = 10 # Window of x samples
     MODEL_SIZE: int = 512
 
-    USE_SYNTHETHIC_DATA: bool = False
-
-    print("YOLO")
     print("TensorFlow version:", tf.__version__)
     print("TensorFlow build with cuda:", tf.test.is_built_with_cuda())
     print("Num GPUs available:", len(tf.config.list_physical_devices('GPU')))
@@ -486,16 +378,7 @@ if __name__ == "__main__":
 
     # Load the data from the database
     print("\nLoading data from the database...")
-    df: pd.DataFrame = pd.DataFrame()
-    if (not USE_SYNTHETHIC_DATA):
-        df = loadFromDatabase("../dataExtraction/imu_data.db")#os.path.expanduser("~/DeepLearning_AHRS/src/dataExtraction/imu_data.db"))#
-    else:
-        df = generate_synthetic_data(n_samples=1000000, n_files=1)
-
-    # Insert this after preprocessing in your main block
-    #print("\nPlotting synthetic data...")
-    #plot_synthetic_data(df)
-    #exit()
+    df: pd.DataFrame = loadFromDatabase("../dataExtraction/imu_data.db")
 
     # Preview the data
     print("\nData preview:")
@@ -519,8 +402,7 @@ if __name__ == "__main__":
 
     # Preprocess the data
     print("\nPreprocessing data...")
-    if (not USE_SYNTHETHIC_DATA):
-        df = preprocessData(df)
+    df = preprocessData(df)
 
     # Print the min and max values of each column of the DataFrame
     print("\nData min and max values:")
@@ -547,9 +429,9 @@ if __name__ == "__main__":
     test_dfs = []
     for file_id, group in df.groupby("file_id"):
         n_rows = len(group)
-        train_size = int(n_rows * 0.7)  # 70% for train
-        val_size = int(n_rows * 0.15)   # 15% for val
-        test_size = n_rows - train_size - val_size  # Remainder (~15%) for test
+        train_size = int(n_rows * 0.8)  # 80% for train
+        val_size = int(n_rows * 0.1)   # 10% for val
+        test_size = n_rows - train_size - val_size  # Remainder (~10%) for test
 
         # Take sequential chunks to preserve temporal order
         train_df_part = group.iloc[:train_size].copy()
@@ -597,20 +479,17 @@ if __name__ == "__main__":
     # Compile the Model
     model.compile(
         optimizer=Adam(learning_rate=LEARNING_RATE),
-        #loss='mae',  # mse Mean squared error for regression
         loss=quaternion_loss,  # Custom loss function
         metrics=['mae']  # Mean absolute error as additional metric
     )
 
     # Display model summary
     model.summary()
-    #exit()
-
     
     # Save the model if validation loss improves at each epoch
     checkpoint = ModelCheckpoint("checkpoint.h5", save_best_only=True, monitor='val_loss', mode='min')
     # Stop training if validation loss does not improve after 2 epoch. Then restore the best weights
-    early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+    early_stopping = EarlyStopping(monitor='val_loss', patience=PATIENCE, restore_best_weights=True)
     reset_states = ResetStatesCallback([model.get_layer("lstm_1"), model.get_layer("lstm_2")])
 
     # Train the Model
@@ -655,10 +534,7 @@ if __name__ == "__main__":
 
     print("y_pred range:", y_pred.min(), y_pred.max())
 
-    n_samples = 2000
-
     plt.figure(figsize=(10, 6))
-    # Tracer la première composante (par exemple, quat_w) des labels et des prédictions
     plt.plot(y_test[:, 0], label="Vérité terrain (quat_w)")
     plt.plot(y_pred[:, 0], label="Prédiction (quat_w)")
     plt.xlabel("Index de l'échantillon")
@@ -698,6 +574,5 @@ if __name__ == "__main__":
     plt.savefig('quat_z_plot.png')
     plt.close()
 
-
-    # Generate the videos
-    generate_videos(y_test, y_pred, num_videos=20, fps=20, interval=50)
+    # Generate animated videos
+    generate_videos(y_test, y_pred, num_videos=4, fps=20, interval=50)
